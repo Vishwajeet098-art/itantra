@@ -62,7 +62,11 @@ const persist = () => saveDB({ users, phoneIndex, rooms, pushSubs, sosEvents });
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function normalizePhone(p) {
-  return (p || '').replace(/\D/g, '');
+  let cleaned = (p || '').replace(/\D/g, '');
+  if (cleaned.length === 12 && cleaned.startsWith('91')) {
+    cleaned = cleaned.substring(2);
+  }
+  return cleaned;
 }
 function generateCode() {
   const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -112,6 +116,21 @@ app.get('/api/users/search', (req, res) => {
 app.post('/api/rooms/create', (req, res) => {
   const { userId, peerId } = req.body;
   if (!users[userId] || !users[peerId]) return res.status(400).json({ error: 'Invalid user IDs.' });
+
+  // Find existing room between these two exact users
+  let existingCode = null;
+  for (const [code, room] of Object.entries(rooms)) {
+    if (room.members.has(userId) && room.members.has(peerId) && room.members.size === 2) {
+      existingCode = code;
+      break;
+    }
+  }
+
+  if (existingCode) {
+    console.log(`[Room] ${existingCode} reused for ${users[userId].displayName} ↔ ${users[peerId].displayName}`);
+    return res.json({ code: existingCode, peerName: users[peerId].displayName });
+  }
+
   let code;
   do { code = generateCode(); } while (rooms[code]);
   rooms[code] = {
