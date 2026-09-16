@@ -47,16 +47,18 @@ app.use(cors());
 app.use(express.json());
 
 // ── In-memory stores ──────────────────────────────────────────────────────────
-// users[userId] = { userId, displayName, phone(hashed for search), createdAt }
-const users = {};
-// phoneIndex[normalizedPhone] = userId  (private — never sent to client)
-const phoneIndex = {};
-// rooms[code] = { members: Set<userId>, sockets: {userId→socketId}, createdAt, messages[] }
-const rooms = {};
-// pushSubs[userId] = [{ subscription }]
-const pushSubs = {};
-// sosEvents[]
-const sosEvents = [];
+const { loadDB, saveDB } = require('./persistence');
+
+// ── Shared Production Database ───────────────────────────────────────────────
+const db = loadDB();
+const users = db.users;
+const phoneIndex = db.phoneIndex;
+const rooms = db.rooms;
+const pushSubs = db.pushSubs;
+const sosEvents = db.sosEvents;
+
+// Wrapper to save on changes
+const persist = () => saveDB({ users, phoneIndex, rooms, pushSubs, sosEvents });
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function normalizePhone(p) {
@@ -71,6 +73,10 @@ function getHost(req) {
   const proto = req.headers['x-forwarded-proto'] || 'http';
   return `${proto}://${h}`;
 }
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', db: 'ok' });
+});
 
 // ── User registration ──────────────────────────────────────────────────────────
 app.post('/api/users/register', (req, res) => {
@@ -362,6 +368,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('send_sos', ({ location }) => {
+    const code = socket.data.room;
+    const userId = socket.data.userId;
+    const room = rooms[code];
+    if (!room || !userId) return;
+
+    const ev = { id: uuidv4(), senderId: userId, senderName: users[userId]?.displayName || 'User', location, timestamp: new Date().toISOString() };
+    sosEvents.push(ev);
+    console.log(`[SOS Room ${code}] from ${ev.senderName}`);
+
+    // Deliver to peers
+    for (const [mid, sid] of Object.entries(room.sockets)) {
+      if (mid !== userId && sid) io.to(sid).emit('receive_sos', ev);
+    }
+  });
+
   socket.on('disconnect', () => {
     const code = socket.data.room;
     const userId = socket.data.userId;
@@ -396,9 +418,12 @@ setInterval(() => {
   }
 }, 30 * 60 * 1000);
 
+// Continuous DB persistence
+setInterval(persist, 2000);
+
 const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n✅ iTantra backend`);
+  console.log(`Server is running on port ${PORT}`);
   console.log(`   http://localhost:${PORT}`);
   console.log(`   http://10.203.71.75:${PORT}\n`);
 });
